@@ -260,7 +260,7 @@ void scan_dev(gboolean reload)
        gchar *compiler_name;
        gchar *version_command;
        gchar *regex;
-       gboolean stdout;
+       gboolean read_stdout;
     } detect_lang[] = {
        { N_("Scripting Languages"), NULL, FALSE },
        { N_("Gambas3 (gbr3)"), "gbr3 --version", "\\d+\\.\\d+\\.\\d+", TRUE },
@@ -318,7 +318,7 @@ void scan_dev(gboolean reload)
             continue;
        }
 
-       if (detect_lang[i].stdout) {
+       if (detect_lang[i].read_stdout) {
             found = hardinfo_spawn_command_line_sync(detect_lang[i].version_command, &output, &ignored, NULL, NULL);
        } else {
             found = hardinfo_spawn_command_line_sync(detect_lang[i].version_command, &ignored, &output, NULL, NULL);
@@ -544,7 +544,7 @@ gchar *callback_summary(void)
     info_set_view_type(info, SHELL_VIEW_DETAIL);
 
     info_add_group(info, _("Computer"),
-        info_field_printf(_("Processor"),
+        info_field(_("Processor"),
             idle_free(module_call_method("devices::getProcessorNameAndDesc"))),
         info_field_update(_("Memory"), 1000),
         info_field_printf(_("Machine Type"), "%s",
@@ -953,6 +953,11 @@ const gchar *get_memory_desc(void) // [1] const (as to say "don't free")
     return (gchar*)idle_free(avail); // [1] idle_free()
 }
 
+static gchar *get_machine_type(void)
+{
+    return computer_get_virtualization();
+}
+
 const ShellModuleMethod *hi_exported_methods(void)
 {
     static const ShellModuleMethod m[] = {
@@ -964,6 +969,7 @@ const ShellModuleMethod *hi_exported_methods(void)
         {"getKernelModuleDescription", get_kernel_module_description},
         {"getMemoryTotal", get_memory_total},
         {"getMemoryDesc", get_memory_desc},
+        {"getMachineType", get_machine_type},
         {NULL},
     };
 

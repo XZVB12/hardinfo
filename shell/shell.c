@@ -293,7 +293,6 @@ void shell_view_set_enabled(gboolean setting)
     shell_action_set_enabled("CopyAction", setting);
     shell_action_set_enabled("ReportAction", setting);
     shell_action_set_enabled("SyncManagerAction", setting && sync_manager_count_entries() > 0);
-
 }
 
 void shell_status_set_enabled(gboolean setting)
@@ -737,6 +736,11 @@ gboolean hardinfo_link(const gchar *uri) {
     return FALSE; /* didn't handle it */
 }
 
+void shell_set_transient_dialog(GtkWindow *dialog)
+{
+    shell->transient_dialog = dialog ? dialog : GTK_WINDOW(shell->window);
+}
+
 void shell_init(GSList * modules)
 {
     if (shell) {
@@ -756,11 +760,13 @@ void shell_init(GSList * modules)
     shell_action_set_property("RefreshAction", "is-important", TRUE);
     shell_action_set_property("ReportAction", "is-important", TRUE);
     shell_action_set_property("ReportBugAction", "is-important", TRUE);
+    shell_action_set_property("SyncManagerAction", "is-important", TRUE);
 
     shell->tree = tree_new();
     shell->info_tree = info_tree_new();
     shell->loadgraph = load_graph_new(75);
     shell->detail_view = detail_view_new();
+    shell->transient_dialog = GTK_WINDOW(shell->window);
 
     update_tbl = g_hash_table_new_full(g_str_hash, g_str_equal,
                                        g_free, destroy_update_tbl_value);
@@ -838,6 +844,8 @@ static gboolean update_field(gpointer data)
             if (shell->view_type == SHELL_VIEW_LOAD_GRAPH &&
                 gtk_tree_selection_iter_is_selected(shell->info_tree->selection,
                                                     item->iter)) {
+
+                load_graph_set_title(shell->loadgraph, fu->field_name);
                 load_graph_update(shell->loadgraph, atof(value));
             }
 
@@ -871,6 +879,10 @@ static gboolean update_field(gpointer data)
     return FALSE;
 }
 
+#if GTK_CHECK_VERSION(3, 0, 0)
+#define RANGE_SET_VALUE(...)
+#define RANGE_GET_VALUE(...) 0
+#else
 #define RANGE_SET_VALUE(tree, scrollbar, value)                                \
     do {                                                                       \
         GtkRange CONCAT(*range, __LINE__) =                                    \
@@ -882,6 +894,7 @@ static gboolean update_field(gpointer data)
 #define RANGE_GET_VALUE(tree, scrollbar)                                       \
     gtk_range_get_value(                                                       \
         GTK_RANGE(GTK_SCROLLED_WINDOW(shell->tree->scroll)->scrollbar))
+#endif
 
 static void
 destroy_widget(GtkWidget *widget, gpointer user_data)

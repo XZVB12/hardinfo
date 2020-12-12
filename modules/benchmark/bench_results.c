@@ -1,6 +1,6 @@
 /*
  *    HardInfo - Displays System Information
- *    Copyright (C) 2003-2017 Leandro A. F. Pereira <leandro@hardinfo.org>
+ *    Copyright (C) 2020 Leandro A. F. Pereira <leandro@hardinfo.org>
  *    This file:
  *    Copyright (C) 2017 Burt P. <pburt0@gmail.com>
  *
@@ -19,6 +19,7 @@
  */
 
 #include <inttypes.h>
+#include <json-glib/json-glib.h>
 
 /* in dmi_memory.c */
 uint64_t memory_devices_get_system_memory_MiB();
@@ -45,6 +46,7 @@ typedef struct {
     uint64_t memory_phys_MiB; /* from DMI/SPD/DTree/Table/Blocks, etc. */
     char *ram_types;
     int machine_data_version;
+    char *machine_type;
 } bench_machine;
 
 typedef struct {
@@ -147,7 +149,7 @@ static void gen_machine_id(bench_machine *m)
                                  (m->board != NULL) ? m->board : "(Unknown)",
                                  m->cpu_name, cpu_config_val(m->cpu_config));
         for (s = m->mid; *s; s++) {
-            if (!isalnum(*s) && (*s != '(' || *s != ')' || *s != ';'))
+            if (!isalnum(*s) && *s != '(' && *s != ')' && *s != ';')
                 *s = '_';
         }
     }
@@ -155,11 +157,7 @@ static void gen_machine_id(bench_machine *m)
 
 bench_machine *bench_machine_new()
 {
-    bench_machine *m = NULL;
-    m = malloc(sizeof(bench_machine));
-    if (m)
-        memset(m, 0, sizeof(bench_machine));
-    return m;
+    return calloc(1, sizeof(bench_machine));
 }
 
 bench_machine *bench_machine_this()
@@ -182,6 +180,7 @@ bench_machine *bench_machine_this()
         m->memory_kiB = strtoull(tmp, NULL, 10);
         m->memory_phys_MiB = memory_devices_get_system_memory_MiB();
         m->ram_types = memory_devices_get_system_memory_types_str();
+        m->machine_type = module_call_method("computer::getMachineType");
         free(tmp);
 
         cpu_procs_cores_threads(&m->processors, &m->cores, &m->threads);
@@ -199,6 +198,8 @@ void bench_machine_free(bench_machine *s)
         free(s->cpu_config);
         free(s->mid);
         free(s->ram_types);
+        free(s->machine_type);
+        free(s);
     }
 }
 
@@ -207,6 +208,7 @@ void bench_result_free(bench_result *s)
     if (s) {
         free(s->name);
         bench_machine_free(s->machine);
+        g_free(s);
     }
 }
 
@@ -277,6 +279,104 @@ static gboolean cpu_name_needs_cleanup(const char *cpu_name)
 {
     return strstr(cpu_name, "Intel") || strstr(cpu_name, "AMD") ||
            strstr(cpu_name, "VIA") || strstr(cpu_name, "Cyrix");
+}
+
+static void filter_invalid_chars(gchar *str)
+{
+    gchar *p;
+
+    for (p = str; *p; p++) {
+        if (*p == '\n' || *p == ';' || *p == '|')
+            *p = '_';
+    }
+}
+
+static gboolean json_get_boolean(JsonObject *obj, const gchar *key)
+{
+    if (!json_object_has_member(obj, key))
+        return FALSE;
+    return json_object_get_boolean_member(obj, key);
+}
+
+static double json_get_double(JsonObject *obj, const gchar *key)
+{
+    if (!json_object_has_member(obj, key))
+        return 0;
+    return json_object_get_double_member(obj, key);
+}
+
+static int json_get_int(JsonObject *obj, const gchar *key)
+{
+    if (!json_object_has_member(obj, key))
+        return 0;
+    return json_object_get_int_member(obj, key);
+}
+
+static const gchar *json_get_string(JsonObject *obj, const gchar *key)
+{
+    if (!json_object_has_member(obj, key))
+        return "";
+    return json_object_get_string_member(obj, key);
+}
+
+static gchar *json_get_string_dup(JsonObject *obj, const gchar *key)
+{
+    return g_strdup(json_get_string(obj, key));
+}
+
+bench_result *bench_result_benchmarkjson(const gchar *bench_name,
+                                         JsonNode *node)
+{
+    JsonObject *machine;
+    bench_result *b;
+    gchar *p;
+
+    if (json_node_get_node_type(node) != JSON_NODE_OBJECT)
+        return NULL;
+
+    machine = json_node_get_object(node);
+
+    b = g_new0(bench_result, 1);
+    b->name = g_strdup(bench_name);
+    b->legacy = json_get_boolean(machine, "Legacy");
+
+    b->bvalue = (bench_value){
+        .result = json_get_double(machine, "BenchmarkResult"),
+        .elapsed_time = json_get_double(machine, "ElapsedTime"),
+        .threads_used = json_get_int(machine, "UsedThreads"),
+        .revision = json_get_int(machine, "BenchmarkRevision"),
+    };
+
+    snprintf(b->bvalue.extra, sizeof(b->bvalue.extra), "%s",
+             json_get_string(machine, "ExtraInfo"));
+    filter_invalid_chars(b->bvalue.extra);
+
+    snprintf(b->bvalue.user_note, sizeof(b->bvalue.user_note), "%s",
+             json_get_string(machine, "UserNote"));
+    filter_invalid_chars(b->bvalue.user_note);
+
+    b->machine = bench_machine_new();
+    *b->machine = (bench_machine){
+        .board = json_get_string_dup(machine, "Board"),
+        .memory_kiB = json_get_int(machine, "MemoryInKiB"),
+        .cpu_name = json_get_string_dup(machine, "CpuName"),
+        .cpu_desc = json_get_string_dup(machine, "CpuDesc"),
+        .cpu_config = json_get_string_dup(machine, "CpuConfig"),
+        .ogl_renderer = json_get_string_dup(machine, "OpenGlRenderer"),
+        .gpu_desc = json_get_string_dup(machine, "GpuDesc"),
+        .processors = json_get_int(machine, "NumCpus"),
+        .cores = json_get_int(machine, "NumCores"),
+        .threads = json_get_int(machine, "NumThreads"),
+        .mid = json_get_string_dup(machine, "MachineId"),
+        .ptr_bits = json_get_int(machine, "PointerBits"),
+        .is_su_data = json_get_boolean(machine, "DataFromSuperUser"),
+        .memory_phys_MiB = json_get_int(machine, "PhysicalMemoryInMiB"),
+        .ram_types = json_get_string_dup(machine, "MemoryTypes"),
+        .machine_data_version = json_get_int(machine, "MachineDataVersion"),
+        .machine_type = json_get_string_dup(machine, "MachineType"),
+    };
+
+    return b;
 }
 
 bench_result *
@@ -465,6 +565,7 @@ static char *bench_result_more_info_less(bench_result *b)
         /* legacy */ "%s%s=%s\n"
         "[%s]\n"
         /* board */ "%s=%s\n"
+        /* machine_type */ "%s=%s\n"
         /* cpu   */ "%s=%s\n"
         /* cpudesc */ "%s=%s\n"
         /* cpucfg */ "%s=%s\n"
@@ -484,15 +585,15 @@ static char *bench_result_more_info_less(bench_result *b)
                       "might not be comparable to current version. Some "
                       "details are missing.")
                   : "",
-        _("Machine"), _("Board"),
-        (b->machine->board != NULL) ? b->machine->board : _(unk), _("CPU Name"),
-        b->machine->cpu_name, _("CPU Description"),
-        (b->machine->cpu_desc != NULL) ? b->machine->cpu_desc : _(unk),
-        _("CPU Config"), b->machine->cpu_config, _("Threads Available"),
-        b->machine->threads, _("GPU"),
-        (b->machine->gpu_desc != NULL) ? b->machine->gpu_desc : _(unk),
-        _("OpenGL Renderer"),
-        (b->machine->ogl_renderer != NULL) ? b->machine->ogl_renderer : _(unk),
+        _("Machine"),
+        _("Board"), (b->machine->board != NULL) ? b->machine->board : _(unk),
+        _("Machine Type"), (b->machine->machine_type != NULL) ? b->machine->machine_type : _(unk),
+        _("CPU Name"), b->machine->cpu_name,
+        _("CPU Description"), (b->machine->cpu_desc != NULL) ? b->machine->cpu_desc : _(unk),
+        _("CPU Config"), b->machine->cpu_config,
+        _("Threads Available"), b->machine->threads,
+        _("GPU"), (b->machine->gpu_desc != NULL) ? b->machine->gpu_desc : _(unk),
+        _("OpenGL Renderer"), (b->machine->ogl_renderer != NULL) ? b->machine->ogl_renderer : _(unk),
         _("Memory"), memory,
         b->machine->ptr_bits ? _("Pointer Size") : "#AddySize", bits);
     free(memory);
@@ -521,6 +622,7 @@ static char *bench_result_more_info_complete(bench_result *b)
         /* legacy */ "%s%s=%s\n"
         "[%s]\n"
         /* board */ "%s=%s\n"
+        /* machine_type */ "%s=%s\n"
         /* cpu   */ "%s=%s\n"
         /* cpudesc */ "%s=%s\n"
         /* cpucfg */ "%s=%s\n"
@@ -547,7 +649,9 @@ static char *bench_result_more_info_complete(bench_result *b)
                       "details are missing.")
                   : "",
         _("Machine"), _("Board"),
-        (b->machine->board != NULL) ? b->machine->board : _(unk), _("CPU Name"),
+        (b->machine->board != NULL) ? b->machine->board : _(unk),
+        _("Machine Type"), (b->machine->machine_type != NULL) ? b->machine->machine_type : _(unk),
+        _("CPU Name"),
         b->machine->cpu_name, _("CPU Description"),
         (b->machine->cpu_desc != NULL) ? b->machine->cpu_desc : _(unk),
         _("CPU Config"), b->machine->cpu_config, _("Threads Available"),

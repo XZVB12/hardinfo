@@ -186,6 +186,10 @@ gboolean __scan_udisks2_devices(void) {
         { "read-error-retry-rate",        _("Read Error Retry Rate") },
         { "total-lbas-written",           _("Total LBAs Written") },
         { "total-lbas-read",              _("Total LBAs Read") },
+        { "wear-leveling-count",          _("Wear leveling Count") },
+        { "used-reserved-blocks-total",   _("Total Used Reserved Block Count") },
+        { "program-fail-count-total",     _("Total Program Fail Count") },
+        { "erase-fail-count-total",       _("Total Erase Fail Count") },
         { NULL, NULL }
     };
 
@@ -307,7 +311,7 @@ gboolean __scan_udisks2_devices(void) {
             moreinfo = h_strdup_cprintf(_("[Self-monitoring (S.M.A.R.T.)]\n"
                                         "Status=%s\n"
                                         "Bad Sectors=%ld\n"
-                                        "Power on time=%d days %d hours\n"
+                                        "Power on time=%lu days %lu hours\n"
                                         "Temperature=%d°C\n"),
                                         moreinfo,
                                         disk->smart_failing ? _("Failing"): _("OK"),
@@ -317,27 +321,54 @@ gboolean __scan_udisks2_devices(void) {
 
             if (disk->smart_attributes != NULL) {
                 moreinfo = h_strdup_cprintf(_("[S.M.A.R.T. Attributes]\n"
-                                            "Attribute=Normalized Value / Worst / Threshold\n"),
+                                            "Attribute=<tt>Value      / Normalized / Worst / Threshold</tt>\n"),
                                             moreinfo);
 
                 attrib = disk->smart_attributes;
 
                 while (attrib != NULL){
                     tmp = g_strdup("");
+
+                    switch (attrib->interpreted_unit){
+                        case UDSK_INTPVAL_SKIP:
+                            tmp = h_strdup_cprintf("-", tmp);
+                            break;
+                        case UDSK_INTPVAL_MILISECONDS:
+                            tmp = h_strdup_cprintf("%ld ms", tmp, attrib->interpreted);
+                            break;
+                        case UDSK_INTPVAL_HOURS:
+                            tmp = h_strdup_cprintf("%ld h", tmp, attrib->interpreted);
+                            break;
+                        case UDSK_INTPVAL_CELSIUS:
+                            tmp = h_strdup_cprintf("%ld°C", tmp, attrib->interpreted);
+                            break;
+                        case UDSK_INTPVAL_SECTORS:
+                            tmp = h_strdup_cprintf(ngettext("%ld sector", "%ld sectors", attrib->interpreted), tmp, attrib->interpreted);
+                            break;
+                        case UDSK_INTPVAL_DIMENSIONLESS:
+                        default:
+                            tmp = h_strdup_cprintf("%ld", tmp, attrib->interpreted);
+                            break;
+                    }
+
+                    // pad spaces to next col
+                    j = g_utf8_strlen(tmp, -1);
+                    if (j < 13) tmp = h_strdup_cprintf("%*c", tmp, 13 - j, ' ');
+
                     if (attrib->value != -1)
-                        tmp = h_strdup_cprintf("%3d", tmp, attrib->value);
+                        tmp = h_strdup_cprintf("%-13d", tmp, attrib->value);
                     else
-                        tmp = h_strdup_cprintf("???", tmp);
+                        tmp = h_strdup_cprintf("%-13s", tmp, "???");
 
                     if (attrib->worst != -1)
-                        tmp = h_strdup_cprintf(" / %3d", tmp, attrib->worst);
+                        tmp = h_strdup_cprintf("%-8d", tmp, attrib->worst);
                     else
-                        tmp = h_strdup_cprintf(" / ???", tmp);
+                        tmp = h_strdup_cprintf("%-8s", tmp, "???");
 
                     if (attrib->threshold != -1)
-                        tmp = h_strdup_cprintf(" / %3d", tmp, attrib->threshold);
+                        tmp = h_strdup_cprintf("%d", tmp, attrib->threshold);
                     else
-                        tmp = h_strdup_cprintf(" / ???", tmp);
+                        tmp = h_strdup_cprintf("???", tmp);
 
 
                     alabel = attrib->identifier;
@@ -348,7 +379,7 @@ gboolean __scan_udisks2_devices(void) {
                         }
                     }
 
-                    moreinfo = h_strdup_cprintf(_("(%d) %s=%s\n"),
+                    moreinfo = h_strdup_cprintf(_("(%d) %s=<tt>%s</tt>\n"),
                                             moreinfo,
                                             attrib->id, alabel, tmp);
                     g_free(tmp);
@@ -542,7 +573,8 @@ void __scan_scsi_devices(void)
 void __scan_ide_devices(void)
 {
     FILE *proc_ide;
-    gchar *device, iface, *model, *media, *pgeometry = NULL, *lgeometry = NULL;
+    gchar *device, *model, *media, *pgeometry = NULL, *lgeometry = NULL;
+    gchar iface;
     gint n = 0, i = 0, cache, nn = 0;
     gchar *capab = NULL, *speed = NULL, *driver = NULL, *ide_storage_list;
 
@@ -690,7 +722,7 @@ void __scan_ide_devices(void)
 
 	    gchar *devid = g_strdup_printf("IDE%d", n);
 
-	    ide_storage_list = h_strdup_cprintf("$%s$%hd%c=|%s\n", ide_storage_list, devid, iface, model);
+	    ide_storage_list = h_strdup_cprintf("$%s$hd%c=|%s\n", ide_storage_list, devid, iface, model);
 	    storage_icons =
 		h_strdup_cprintf("Icon$%s$%s=%s.png\n", storage_icons,
 				 devid, model, g_str_equal(media, "cdrom") ? "cdrom" : "hdd");

@@ -3,7 +3,6 @@ cmake_minimum_required(VERSION 2.6)
 cmake_policy(VERSION 2.6)
 
 set(HARDINFO_VERSION "0.6-alpha")
-option(HARDINFO_NOSYNC "Disable database sync via libsoup" 1)
 option(HARDINFO_GTK3 "Attempt to build for GTK3 (0/off for GTK2)" 0)
 set(OVRARCH "" CACHE STRING "Override HARDINFO_ARCH value")
 set(OVRCPUINFO "" CACHE STRING "Specify a different file for /proc/cpuinfo")
@@ -50,6 +49,8 @@ elseif(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "sh[3-5]")
 	set(HARDINFO_ARCH "sh")
 elseif(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "(riscv|riscv32|riscv64)")
 	set(HARDINFO_ARCH "riscv")
+elseif(${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "e2k")
+        set(HARDINFO_ARCH "e2k")
 else()
 	message(FATAL_ERROR "Unsupported architecture: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
 endif()
@@ -72,6 +73,8 @@ message(STATUS "Building HardInfo for architecture: ${HARDINFO_OS}-${HARDINFO_AR
 
 add_definitions("-std=gnu89")
 add_definitions("-Wno-deprecated-declarations")
+add_definitions("-Wformat")
+add_definitions("-Wformat-security")
 
 add_subdirectory(po)
 
@@ -85,9 +88,8 @@ else()
 	pkg_check_modules(GTK REQUIRED gtk+-2.0>=2.10 glib-2.0>=2.10 gthread-2.0>=2.10 gmodule-export-2.0>=2.10)
 endif()
 
-if(NOT HARDINFO_NOSYNC)
-	pkg_check_modules(LIBSOUP libsoup-2.4>=2.24)
-endif()
+pkg_check_modules(LIBSOUP libsoup-2.4>=2.42)
+pkg_check_modules(JSON_GLIB REQUIRED json-glib-1.0)
 
 pkg_check_modules(X11 REQUIRED x11)
 
@@ -105,11 +107,13 @@ include_directories(
 	${LIBSOUP_INCLUDE_DIRS}
 	${ZLIB_INCLUDE_DIRS}
 	${X11_INCLUDE_DIRS}
+	${JSON_GLIB_INCLUDE_DIRS}
 )
 link_directories(
 	${GTK_LIBRARY_DIRS}
 	${LIBSOUP_LIBRARY_DIRS}
 	${X11_LIBRARY_DIRS}
+	${JSON_GLIB_LIBRARY_DIRS}
 )
 
 set(HARDINFO_MODULES
@@ -119,15 +123,15 @@ set(HARDINFO_MODULES
 	network
 )
 set(HARDINFO_RESOURCES
-	"data/benchmark.conf"
 	"data/benchmark.data"
-	"deps/sysobj_early/data/vendor.ids"
-	"deps/sysobj_early/data/sdcard.ids"
-	"deps/sysobj_early/data/usb.ids"
-	"deps/sysobj_early/data/arm.ids"
-	"deps/sysobj_early/data/edid.ids"
-	"deps/sysobj_early/data/ieee_oui.ids"
-	"deps/sysobj_early/data/pci.ids.min"
+	"data/benchmark.json"
+	"data/vendor.ids"
+	"data/sdcard.ids"
+	"data/usb.ids"
+	"data/arm.ids"
+	"data/edid.ids"
+	"data/ieee_oui.ids"
+	"data/pci.ids.min"
 )
 
 set(HARDINFO_MANPAGES
@@ -227,6 +231,7 @@ foreach (_module ${HARDINFO_MODULES})
 	add_library(${_module} MODULE ${MODULE_${_module}_SOURCES})
 	set_target_properties(${_module} PROPERTIES PREFIX "")
 endforeach()
+target_link_libraries(benchmark ${JSON_GLIB_LIBRARIES})
 
 add_library(sysobj_early STATIC
 	deps/sysobj_early/src/gg_slist.c
@@ -310,6 +315,7 @@ target_link_libraries(hardinfo
 	m
 	${ZLIB_LIBRARIES}
 	${X11_LIBRARIES}
+	${JSON_GLIB_LIBRARIES}
 )
 set_target_properties(hardinfo PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
 else()
@@ -349,6 +355,7 @@ target_link_libraries(hardinfo
 	m
 	${ZLIB_LIBRARIES}
 	${X11_LIBRARIES}
+	${JSON_GLIB_LIBRARIES}
 )
 endif()
 
@@ -379,7 +386,7 @@ install(DIRECTORY doc
 	PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 install(FILES ${HARDINFO_MANPAGES}
-	DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/man/man1
+	DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
 	PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 install(FILES pixmaps/hardinfo.png

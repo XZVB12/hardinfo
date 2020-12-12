@@ -36,9 +36,6 @@ struct _SyncNetArea {
 };
 
 struct _SyncNetAction {
-    gchar *name;
-    gboolean (*do_action)(SyncDialog *sd, gpointer sna);
-
     SyncEntry *entry;
     GError *error;
 };
@@ -50,6 +47,7 @@ struct _SyncDialog {
     GtkWidget *button_sync;
     GtkWidget *button_cancel;
     GtkWidget *button_close;
+    GtkWidget *button_priv_policy;
 
     GtkWidget *scroll_box;
 
@@ -63,12 +61,11 @@ static SoupSession *session = NULL;
 static GMainLoop *loop;
 static GQuark err_quark;
 
-#define XMLRPC_SERVER_URI "https://xmlrpc.hardinfo.org/"
-#define XMLRPC_SERVER_API_VERSION 1
+#define API_SERVER_URI "https://api.hardinfo.org"
 
 #define LABEL_SYNC_DEFAULT                                                     \
     _("<big><b>Synchronize with Central Database</b></big>\n"                  \
-      "The following information may be synchronized "                         \
+      "The following information may be synchronized\n"                         \
       "with the HardInfo central database.")
 #define LABEL_SYNC_SYNCING                                                     \
     _("<big><b>Synchronizing</b></big>\n"                                      \
@@ -105,7 +102,7 @@ gint sync_manager_count_entries(void)
 void sync_manager_add_entry(SyncEntry *entry)
 {
 #ifdef HAS_LIBSOUP
-    DEBUG("registering syncmanager entry ''%s''", entry->fancy_name);
+    DEBUG("registering syncmanager entry ''%s''", entry->name);
 
     entry->selected = TRUE;
     entries = g_slist_append(entries, entry);
@@ -139,9 +136,11 @@ void sync_manager_show(GtkWidget *parent)
     if (gtk_dialog_run(GTK_DIALOG(sd->dialog)) == GTK_RESPONSE_ACCEPT) {
         shell_view_set_enabled(FALSE);
         shell_status_set_enabled(TRUE);
+        shell_set_transient_dialog(GTK_WINDOW(sd->dialog));
 
         sync_dialog_start_sync(sd);
 
+        shell_set_transient_dialog(NULL);
         shell_status_set_enabled(FALSE);
         shell_view_set_enabled(TRUE);
     }
@@ -151,201 +150,6 @@ void sync_manager_show(GtkWidget *parent)
 }
 
 #ifdef HAS_LIBSOUP
-static gint _soup_get_xmlrpc_value_int(SoupMessage *msg, SyncNetAction *sna)
-{
-    gint int_value = -1;
-
-    sna->error = NULL;
-
-    if (!SOUP_STATUS_IS_SUCCESSFUL(msg->status_code)) {
-        SNA_ERROR(1, _("%s (error #%d)"), msg->reason_phrase, msg->status_code);
-        goto bad;
-    }
-
-    GVariant *value = soup_xmlrpc_parse_response(
-        msg->response_body->data, msg->response_body->length, "h", NULL);
-    if (!value) {
-        SNA_ERROR(2, _("Could not parse XML-RPC response"));
-        goto bad;
-    }
-
-    int_value = g_variant_get_int32(value);
-    g_variant_unref(value);
-
-bad:
-    return int_value;
-}
-
-static gchar *_soup_get_xmlrpc_value_string(SoupMessage *msg,
-                                            SyncNetAction *sna)
-{
-    gchar *string = NULL;
-
-    sna->error = NULL;
-
-    if (!SOUP_STATUS_IS_SUCCESSFUL(msg->status_code)) {
-        SNA_ERROR(1, _("%s (error #%d)"), msg->reason_phrase, msg->status_code);
-        goto bad;
-    }
-
-    GVariant *value = soup_xmlrpc_parse_response(
-        msg->response_body->data, msg->response_body->length, "s", NULL);
-    if (!value) {
-        SNA_ERROR(2, _("Could not parse XML-RPC response"));
-        goto bad;
-    }
-
-    string = g_strdup(g_variant_get_string(value, NULL));
-    g_variant_unref(value);
-
-bad:
-    return string;
-}
-
-static gboolean _soup_xmlrpc_call(gchar *method,
-                                  SyncNetAction *sna,
-                                  SoupSessionCallback callback)
-{
-    SoupMessage *msg;
-
-    sna->error = NULL;
-
-    msg = soup_xmlrpc_message_new(XMLRPC_SERVER_URI, method, NULL, NULL);
-    if (!msg)
-        return FALSE;
-
-    DEBUG("calling xmlrpc method %s", method);
-
-    soup_session_queue_message(session, msg, callback, sna);
-    g_main_run(loop);
-
-    return TRUE;
-}
-
-static gboolean _soup_xmlrpc_call_with_parameters(gchar *method,
-                                                  SyncNetAction *sna,
-                                                  SoupSessionCallback callback,
-                                                  ...)
-{
-    SoupMessage *msg;
-    GVariantBuilder builder;
-    GVariant *parameters;
-    gchar *argument, *body;
-    va_list ap;
-
-    sna->error = NULL;
-
-    msg = soup_message_new("POST", XMLRPC_SERVER_URI);
-
-    DEBUG("calling xmlrpc method %s", method);
-    if (!msg)
-        return FALSE;
-
-    g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
-    va_start(ap, callback);
-    while ((argument = va_arg(ap, gchar *))) {
-        g_variant_builder_add(&builder, "s", argument);
-        DEBUG("with parameter: %s", argument);
-    }
-    va_end(ap);
-    parameters = g_variant_builder_end(&builder);
-    g_variant_builder_unref(&builder);
-
-    body = soup_xmlrpc_build_request(method, parameters, NULL);
-    g_variant_unref(parameters);
-    if (body) {
-        soup_message_set_request(msg, "text/xml", SOUP_MEMORY_TAKE, body,
-                                 strlen(body));
-
-        soup_session_queue_message(session, msg, callback, sna);
-        g_main_run(loop);
-
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
-static void _action_check_api_version_got_response(SoupSession *session,
-                                                   SoupMessage *msg,
-                                                   gpointer user_data)
-{
-    SyncNetAction *sna = (SyncNetAction *)user_data;
-    gint version = _soup_get_xmlrpc_value_int(msg, sna);
-
-    if (version != XMLRPC_SERVER_API_VERSION) {
-        SNA_ERROR(5,
-                  _("Server says it supports API version %d, but "
-                    "this version of HardInfo only supports API "
-                    "version %d."),
-                  version, XMLRPC_SERVER_API_VERSION);
-    }
-
-    g_main_quit(loop);
-}
-
-static gboolean _action_check_api_version(SyncDialog *sd, gpointer user_data)
-{
-    SyncNetAction *sna = (SyncNetAction *)user_data;
-
-    if (!_soup_xmlrpc_call("server.getAPIVersion", sna,
-                           _action_check_api_version_got_response))
-        return FALSE;
-
-    return sna->error ? FALSE : TRUE;
-}
-
-static void _action_call_function_got_response(SoupSession *session,
-                                               SoupMessage *msg,
-                                               gpointer user_data)
-{
-    SyncNetAction *sna = (SyncNetAction *)user_data;
-    gchar *string;
-
-    if ((string = _soup_get_xmlrpc_value_string(msg, sna)) &&
-        sna->entry->save_to) {
-        DEBUG("received string: %s\n", string);
-        gchar *filename = g_build_filename(g_get_user_config_dir(), "hardinfo",
-                                           sna->entry->save_to, NULL);
-
-        DEBUG("saving to %s", filename);
-
-        g_file_set_contents(filename, string, -1, NULL);
-        g_free(filename);
-    }
-
-    if (sna->entry->callback) {
-        sna->entry->callback(sna->entry, string);
-    }
-
-    g_free(string);
-    g_main_quit(loop);
-}
-
-static gboolean _action_call_function(SyncDialog *sd, gpointer user_data)
-{
-    SyncNetAction *sna = (SyncNetAction *)user_data;
-
-    if (sna->entry) {
-        gchar *str_data = NULL;
-
-        if (sna->entry->get_data)
-            str_data = sna->entry->get_data();
-
-        if (!_soup_xmlrpc_call_with_parameters(
-                "sync.callFunctionEx", sna, _action_call_function_got_response,
-                VERSION, ARCH, sna->entry->name, str_data, NULL)) {
-            g_free(str_data);
-
-            return FALSE;
-        }
-
-        g_free(str_data);
-    }
-
-    return sna->error ? FALSE : TRUE;
-}
-
 static gboolean _cancel_sync(GtkWidget *widget, gpointer data)
 {
     SyncDialog *sd = (SyncDialog *)data;
@@ -355,7 +159,7 @@ static gboolean _cancel_sync(GtkWidget *widget, gpointer data)
     }
 
     sd->flag_cancel = TRUE;
-    g_main_quit(loop);
+    g_main_loop_quit(loop);
 
     gtk_widget_set_sensitive(widget, FALSE);
 
@@ -367,24 +171,17 @@ static SyncNetAction *sync_manager_get_selected_actions(gint *n)
     gint i;
     GSList *entry;
     SyncNetAction *actions;
-    SyncNetAction action_check_api = {_("Contacting HardInfo Central Database"),
-                                      _action_check_api_version},
-                  action_clean_up = {_("Cleaning up"), NULL};
 
-    actions = g_new0(SyncNetAction, 2 + g_slist_length(entries));
+    actions = g_new0(SyncNetAction, g_slist_length(entries));
 
-    for (entry = entries, i = 1; entry; entry = entry->next) {
+    for (entry = entries, i = 0; entry; entry = entry->next) {
         SyncEntry *e = (SyncEntry *)entry->data;
 
         if (e->selected) {
-            SyncNetAction sna = {e->fancy_name, _action_call_function, e};
-
+            SyncNetAction sna = {.entry = e};
             actions[i++] = sna;
         }
     }
-
-    actions[0] = action_check_api;
-    actions[i++] = action_clean_up;
 
     *n = i;
     return actions;
@@ -421,6 +218,7 @@ static void sync_dialog_start_sync(SyncDialog *sd)
     loop = g_main_loop_new(NULL, TRUE);
 
     gtk_widget_hide(sd->button_sync);
+    gtk_widget_hide(sd->button_priv_policy);
     sync_dialog_netarea_show(sd);
     g_signal_connect(G_OBJECT(sd->button_cancel), "clicked",
                      (GCallback)_cancel_sync, sd);
@@ -434,10 +232,79 @@ static void sync_dialog_start_sync(SyncDialog *sd)
         gtk_widget_show(sd->button_close);
 
         /* wait for the user to close the dialog */
-        g_main_run(loop);
+        g_main_loop_run(loop);
     }
 
     g_main_loop_unref(loop);
+}
+
+static void got_response(GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    SyncNetAction *sna = user_data;
+    GInputStream *is;
+
+    is = soup_session_send_finish(session, res, &sna->error);
+    if (is == NULL)
+        goto out;
+    if (sna->error != NULL)
+        goto out;
+
+    if (sna->entry->file_name != NULL) {
+        gchar *path = g_build_filename(g_get_user_config_dir(), "hardinfo",
+                                       sna->entry->file_name, NULL);
+        GFile *file = g_file_new_for_path(path);
+        GFileOutputStream *output =
+            g_file_replace(file, NULL, FALSE, G_FILE_CREATE_REPLACE_DESTINATION,
+                           NULL, &sna->error);
+
+        if (output != NULL) {
+            g_output_stream_splice(G_OUTPUT_STREAM(output), is,
+                                   G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET, NULL,
+                                   &sna->error);
+        }
+
+        g_free(path);
+        g_object_unref(file);
+    }
+
+out:
+    g_main_loop_quit(loop);
+    g_object_unref(is);
+}
+
+static gboolean send_request_for_net_action(SyncNetAction *sna)
+{
+    gchar *uri;
+    SoupMessage *msg;
+    guint response_code;
+
+    uri = g_strdup_printf("%s/%s", API_SERVER_URI, sna->entry->file_name);
+
+    if (sna->entry->generate_contents_for_upload == NULL) {
+        msg = soup_message_new("GET", uri);
+    } else {
+        gsize size;
+        gchar *contents = sna->entry->generate_contents_for_upload(&size);
+
+        msg = soup_message_new("POST", uri);
+        soup_message_set_request(msg, "application/octet-stream",
+                                 SOUP_MEMORY_TAKE, contents, size);
+    }
+
+    soup_session_send_async(session, msg, NULL, got_response, sna);
+    g_main_loop_run(loop);
+
+    g_object_unref(msg);
+    g_free(uri);
+
+    if (sna->error != NULL) {
+        DEBUG("Error while sending request: %s", sna->error->message);
+        g_error_free(sna->error);
+        sna->error = NULL;
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 static void
@@ -459,7 +326,7 @@ sync_dialog_netarea_start_actions(SyncDialog *sd, SyncNetAction sna[], gint n)
 
         hbox = gtk_hbox_new(FALSE, 5);
 
-        labels[i] = gtk_label_new(sna[i].name);
+        labels[i] = gtk_label_new(_(sna[i].entry->name));
         status_labels[i] = gtk_label_new(empty_str);
 
         gtk_label_set_use_markup(GTK_LABEL(labels[i]), TRUE);
@@ -482,7 +349,8 @@ sync_dialog_netarea_start_actions(SyncDialog *sd, SyncNetAction sna[], gint n)
         gchar *markup;
 
         if (sd->flag_cancel) {
-            markup = g_strdup_printf("<s>%s</s> <i>%s</i>", sna[i].name,
+            markup = g_strdup_printf("<s>%s</s> <i>%s</i>",
+                                     _(sna[i].entry->name),
                                      _("(canceled)"));
             gtk_label_set_markup(GTK_LABEL(labels[i]), markup);
             g_free(markup);
@@ -491,15 +359,15 @@ sync_dialog_netarea_start_actions(SyncDialog *sd, SyncNetAction sna[], gint n)
             break;
         }
 
-        markup = g_strdup_printf("<b>%s</b>", sna[i].name);
+        markup = g_strdup_printf("<b>%s</b>", _(sna[i].entry->name));
         gtk_label_set_markup(GTK_LABEL(labels[i]), markup);
         g_free(markup);
 
         gtk_label_set_markup(GTK_LABEL(status_labels[i]), curr_str);
 
-        if (sna[i].do_action && !sna[i].do_action(sd, &sna[i])) {
-            markup = g_strdup_printf("<b><s>%s</s></b> <i>%s</i>", sna[i].name,
-                                     _("(failed)"));
+        if (sna[i].entry && !send_request_for_net_action(&sna[i])) {
+            markup = g_strdup_printf("<b><s>%s</s></b> <i>%s</i>",
+                                     _(sna[i].entry->name), _("(failed)"));
             gtk_label_set_markup(GTK_LABEL(labels[i]), markup);
             g_free(markup);
 
@@ -514,7 +382,7 @@ sync_dialog_netarea_start_actions(SyncDialog *sd, SyncNetAction sna[], gint n)
                                 "if this problem persists. (Use the "
                                 "Help\342\206\222Report"
                                 " bug option.)\n\nDetails: %s"),
-                              sna[i].name, sna[i].error->message);
+                                _(sna[i].entry->name), sna[i].error->message);
                 }
 
                 g_error_free(sna[i].error);
@@ -524,13 +392,13 @@ sync_dialog_netarea_start_actions(SyncDialog *sd, SyncNetAction sna[], gint n)
                             "if this problem persists. (Use the "
                             "Help\342\206\222Report"
                             " bug option.)"),
-                          sna[i].name);
+                            _(sna[i].entry->name));
             }
             break;
         }
 
         gtk_label_set_markup(GTK_LABEL(status_labels[i]), done_str);
-        gtk_label_set_markup(GTK_LABEL(labels[i]), sna[i].name);
+        gtk_label_set_markup(GTK_LABEL(labels[i]), _(sna[i].entry->name));
     }
 
     g_free(labels);
@@ -570,8 +438,7 @@ static void sync_dialog_netarea_show(SyncDialog *sd)
     gtk_window_reshow_with_initial_size(GTK_WINDOW(sd->dialog));
 }
 
-#if 0
-static void sync_dialog_netarea_hide(SyncDialog * sd)
+static void sync_dialog_netarea_hide(SyncDialog *sd)
 {
     g_return_if_fail(sd && sd->sna);
 
@@ -581,7 +448,6 @@ static void sync_dialog_netarea_hide(SyncDialog * sd)
     gtk_label_set_markup(GTK_LABEL(sd->label), LABEL_SYNC_DEFAULT);
     gtk_window_reshow_with_initial_size(GTK_WINDOW(sd->dialog));
 }
-#endif
 
 static void populate_store(GtkListStore *store)
 {
@@ -598,7 +464,7 @@ static void populate_store(GtkListStore *store)
         e->selected = TRUE;
 
         gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter, 0, TRUE, 1, e->fancy_name, 2, e, -1);
+        gtk_list_store_set(store, &iter, 0, TRUE, 1, _(e->name), 2, e, -1);
     }
 }
 
@@ -620,7 +486,7 @@ static void sel_toggle(GtkCellRendererToggle *cellrenderertoggle,
     gtk_tree_path_free(path);
 }
 
-static void close_clicked(void) { g_main_quit(loop); }
+static void close_clicked(void) { g_main_loop_quit(loop); }
 
 static SyncDialog *sync_dialog_new(GtkWidget *parent)
 {
@@ -633,6 +499,7 @@ static SyncDialog *sync_dialog_new(GtkWidget *parent)
     GtkWidget *button8;
     GtkWidget *button7;
     GtkWidget *button6;
+    GtkWidget *priv_policy_btn;
     GtkWidget *label;
     GtkWidget *hbox;
 
@@ -646,7 +513,7 @@ static SyncDialog *sync_dialog_new(GtkWidget *parent)
 
     dialog = gtk_dialog_new();
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(parent));
-    gtk_window_set_title(GTK_WINDOW(dialog), _("Network Updater"));
+    gtk_window_set_title(GTK_WINDOW(dialog), _("Synchronize"));
     gtk_window_set_resizable(GTK_WINDOW(dialog), FALSE);
     gtk_window_set_icon(GTK_WINDOW(dialog),
                         icon_cache_get_pixbuf("syncmanager.png"));
@@ -719,6 +586,12 @@ static SyncDialog *sync_dialog_new(GtkWidget *parent)
 
     populate_store(store);
 
+    priv_policy_btn = gtk_link_button_new_with_label(
+            "https://github.com/lpereira/hardinfo/wiki/Privacy-Policy",
+            _("Privacy Policy"));
+    gtk_widget_show(priv_policy_btn);
+    gtk_box_pack_start(GTK_BOX(dialog1_vbox), priv_policy_btn, FALSE, FALSE, 0);
+
 #if GTK_CHECK_VERSION(2, 14, 0)
     dialog1_action_area = gtk_dialog_get_action_area(GTK_DIALOG(dialog));
 #else
@@ -761,6 +634,7 @@ static SyncDialog *sync_dialog_new(GtkWidget *parent)
     sd->button_sync = button7;
     sd->button_cancel = button8;
     sd->button_close = button6;
+    sd->button_priv_policy = priv_policy_btn;
     sd->scroll_box = scrolledwindow2;
     sd->label = label;
 

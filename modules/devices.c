@@ -830,29 +830,32 @@ guchar hi_module_get_weight(void)
 
 void hi_module_init(void)
 {
-    if (!g_file_test("/usr/share/misc/pci.ids", G_FILE_TEST_EXISTS)) {
-        static SyncEntry se = {
-             .fancy_name = N_("Update PCI ID listing"),
-             .name = "GetPCIIds",
-             .save_to = "pci.ids",
-             .get_data = NULL
-        };
+    static SyncEntry entries[] = {
+        {
+            .name = N_("Update PCI ID listing"),
+            .file_name = "pci.ids",
+        },
+        {
+            .name = N_("Update USB ID listing"),
+            .file_name = "usb.ids",
+        },
+        {
+            .name = N_("Update EDID vendor codes"),
+            .file_name = "edid.ids",
+        },
+        {
+            .name = N_("Update IEEE OUI vendor codes"),
+            .file_name = "ieee_oui.ids",
+        },
+        {
+            .name = N_("Update SD card manufacturer information"),
+            .file_name = "sdcard.ids",
+        },
+    };
+    gint i;
 
-        sync_manager_add_entry(&se);
-    }
-
-#if defined(ARCH_x86) || defined(ARCH_x86_64)
-    {
-      static SyncEntry se = {
-        .fancy_name = N_("Update CPU feature database"),
-        .name = "RecvCPUFlags",
-        .save_to = "cpuflags.conf",
-        .get_data = NULL
-      };
-
-      sync_manager_add_entry(&se);
-    }
-#endif	/* defined(ARCH_x86) */
+    for (i = 0; i < G_N_ELEMENTS(entries); i++)
+        sync_manager_add_entry(&entries[i]);
 
     init_cups();
     sensors_init();
