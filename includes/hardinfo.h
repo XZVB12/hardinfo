@@ -31,7 +31,7 @@
 #include "info.h"
 #include "format_early.h"
 
-#define HARDINFO_COPYRIGHT_LATEST_YEAR 2019
+#define HARDINFO_COPYRIGHT_LATEST_YEAR 2021
 
 #ifndef LOCALEDIR
 #define LOCALEDIR "/usr/share/locale"
@@ -58,6 +58,7 @@ struct _ProgramParameters {
   gboolean autoload_deps;
   gboolean run_xmlrpc_server;
   gboolean skip_benchmarks;
+  gboolean quiet;
 
   /*
    * OK to use the common parts of HTML(4.0) and Pango Markup

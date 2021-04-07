@@ -135,14 +135,15 @@ bench_value benchmark_crunch_for(float seconds,
                                  gpointer callback,
                                  gpointer callback_data)
 {
-    int cpu_procs, cpu_cores, cpu_threads, thread_number, stop = 0;
+    int cpu_procs, cpu_cores, cpu_threads, cpu_nodes;
+    int thread_number, stop = 0;
     GSList *threads = NULL, *t;
     GTimer *timer;
     bench_value ret = EMPTY_BENCH_VALUE;
 
     timer = g_timer_new();
 
-    cpu_procs_cores_threads(&cpu_procs, &cpu_cores, &cpu_threads);
+    cpu_procs_cores_threads_nodes(&cpu_procs, &cpu_cores, &cpu_threads, &cpu_nodes);
     if (n_threads > 0)
         ret.threads_used = n_threads;
     else if (n_threads < 0)
@@ -222,12 +223,14 @@ static gpointer benchmark_parallel_for_dispatcher(gpointer data)
 bench_value
 benchmark_parallel(gint n_threads, gpointer callback, gpointer callback_data)
 {
-    int cpu_procs, cpu_cores, cpu_threads;
-    cpu_procs_cores_threads(&cpu_procs, &cpu_cores, &cpu_threads);
+    int cpu_procs, cpu_cores, cpu_threads, cpu_nodes;
+    cpu_procs_cores_threads_nodes(&cpu_procs, &cpu_cores, &cpu_threads, &cpu_nodes);
+
     if (n_threads == 0)
         n_threads = cpu_threads;
     else if (n_threads == -1)
         n_threads = cpu_cores;
+
     return benchmark_parallel_for(n_threads, 0, n_threads, callback,
                                   callback_data);
 }
@@ -244,7 +247,7 @@ bench_value benchmark_parallel_for(gint n_threads,
                                    gpointer callback_data)
 {
     gchar *temp;
-    int cpu_procs, cpu_cores, cpu_threads;
+    int cpu_procs, cpu_cores, cpu_threads, cpu_nodes;
     guint iter_per_thread, iter, thread_number = 0;
     GSList *threads = NULL, *t;
     GTimer *timer;
@@ -253,7 +256,7 @@ bench_value benchmark_parallel_for(gint n_threads,
 
     timer = g_timer_new();
 
-    cpu_procs_cores_threads(&cpu_procs, &cpu_cores, &cpu_threads);
+    cpu_procs_cores_threads_nodes(&cpu_procs, &cpu_cores, &cpu_threads, &cpu_nodes);
 
     if (n_threads > 0)
         ret.threads_used = n_threads;
@@ -379,42 +382,6 @@ gint bench_result_sort(gconstpointer a, gconstpointer b)
     return 0;
 }
 
-static GSList *benchmark_include_results_conf(const gchar *path,
-                                              bench_value r,
-                                              const gchar *benchmark)
-{
-    GKeyFile *conf;
-    gchar **machines;
-    gchar *results = g_strdup("");
-    GSList *result_list = NULL;
-    gint i;
-
-    DEBUG("Loading benchmark results from conf file %s", path);
-
-    conf = g_key_file_new();
-
-    g_key_file_load_from_file(conf, path, 0, NULL);
-    g_key_file_set_list_separator(conf, '|');
-
-    machines = g_key_file_get_keys(conf, benchmark, NULL, NULL);
-    for (i = 0; machines && machines[i]; i++) {
-        gchar **values;
-        bench_result *sbr;
-
-        values = g_key_file_get_string_list(conf, benchmark, machines[i], NULL,
-                                            NULL);
-        sbr = bench_result_benchmarkconf(benchmark, machines[i], values);
-        result_list = g_slist_append(result_list, sbr);
-
-        g_strfreev(values);
-    }
-
-    g_strfreev(machines);
-    g_key_file_free(conf);
-
-    return result_list;
-}
-
 struct append_machine_result_json_data {
     GSList **result_list;
     const gchar *benchmark_name;
@@ -473,23 +440,18 @@ out:
 
 static gchar *find_benchmark_conf(void)
 {
-    const gchar *files[] = {"benchmark.json", "benchmark.conf", NULL};
     const gchar *config_dir = g_get_user_config_dir();
-    gint i;
+    gchar *path;
 
-    for (i = 0; files[i]; i++) {
-        gchar *path;
+    path = g_build_filename(config_dir, "hardinfo", "benchmark.json", NULL);
+    if (g_file_test(path, G_FILE_TEST_EXISTS))
+        return path;
+    g_free(path);
 
-        path = g_build_filename(config_dir, "hardinfo", files[i], NULL);
-        if (g_file_test(path, G_FILE_TEST_EXISTS))
-            return path;
-        g_free(path);
-
-        path = g_build_filename(params.path_data, files[i], NULL);
-        if (g_file_test(path, G_FILE_TEST_EXISTS))
-            return path;
-        g_free(path);
-    }
+    path = g_build_filename(params.path_data, "benchmark.json", NULL);
+    if (g_file_test(path, G_FILE_TEST_EXISTS))
+        return path;
+    g_free(path);
 
     return NULL;
 }
@@ -550,14 +512,8 @@ static gchar *benchmark_include_results_internal(bench_value this_machine_value,
 
     path = find_benchmark_conf();
     if (path) {
-        if (g_str_has_suffix(path, ".json"))
-            result_list = benchmark_include_results_json(
-                path, this_machine_value, benchmark);
-        else if (g_str_has_suffix(path, ".conf"))
-            result_list = benchmark_include_results_conf(
-                path, this_machine_value, benchmark);
-        else
-            g_assert_not_reached();
+        result_list = benchmark_include_results_json(
+            path, this_machine_value, benchmark);
     }
 
     /* this result */
@@ -841,6 +797,7 @@ static gchar *get_benchmark_results(gsize *len)
         ADD_JSON_VALUE(string, "GpuDesc", this_machine->gpu_desc);
         ADD_JSON_VALUE(int, "NumCpus", this_machine->processors);
         ADD_JSON_VALUE(int, "NumCores", this_machine->cores);
+        ADD_JSON_VALUE(int, "NumNodes", this_machine->nodes);
         ADD_JSON_VALUE(int, "NumThreads", this_machine->threads);
         ADD_JSON_VALUE(string, "MachineId", this_machine->mid);
         ADD_JSON_VALUE(int, "PointerBits", this_machine->ptr_bits);
@@ -901,13 +858,7 @@ static gchar *run_benchmark(gchar *name)
                         strncpy(bench_results[i].user_note,
                                 params.bench_user_note, 255);
 
-                    if (CHK_RESULT_FORMAT("conf")) {
-                        bench_result *b =
-                            bench_result_this_machine(name, bench_results[i]);
-                        char *temp = bench_result_benchmarkconf_line(b);
-                        bench_result_free(b);
-                        return temp;
-                    } else if (CHK_RESULT_FORMAT("shell")) {
+                    if (CHK_RESULT_FORMAT("shell")) {
                         bench_result *b =
                             bench_result_this_machine(name, bench_results[i]);
                         char *temp = bench_result_more_info_complete(b);

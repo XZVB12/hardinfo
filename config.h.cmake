@@ -11,8 +11,8 @@
 #define ARCH_@HARDINFO_ARCH@
 
 #define LIBDIR			"@CMAKE_INSTALL_LIBDIR@"
-#define LIBPREFIX		"@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_LIBDIR@/hardinfo"
-#define PREFIX			"@CMAKE_INSTALL_PREFIX@/share/hardinfo"
+#define LIBPREFIX		"@CMAKE_INSTALL_FULL_LIBDIR@/hardinfo"
+#define PREFIX			"@CMAKE_INSTALL_DATAROOTDIR@/hardinfo"
 
 #cmakedefine LIBSOUP_FOUND
 #cmakedefine HARDINFO_DEBUG	@HARDINFO_DEBUG@
@@ -32,5 +32,7 @@
 
 #define ENABLE_BINRELOC 1
 #define HAS_LINUX_WE 1
+
+#cmakedefine01 HAS_LIBSENSORS
 
 #endif	/* __CONFIG_H__ */

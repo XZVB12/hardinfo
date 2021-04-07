@@ -66,8 +66,8 @@ if (OVRDTRROOT)
 	add_definitions(-DDTR_ROOT=${OVRDTRROOT})
 	message(STATUS "/proc/device-tree override: ${OVRDTRROOT}")
 endif()
-add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_PREFIX}/share/locale")
-message(STATUS "LOCALEDIR = ${CMAKE_INSTALL_PREFIX}/share/locale")
+add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_LOCALEDIR}")
+message(STATUS "LOCALEDIR = ${CMAKE_INSTALL_LOCALEDIR}")
 
 message(STATUS "Building HardInfo for architecture: ${HARDINFO_OS}-${HARDINFO_ARCH}")
 
@@ -233,6 +233,12 @@ foreach (_module ${HARDINFO_MODULES})
 endforeach()
 target_link_libraries(benchmark ${JSON_GLIB_LIBRARIES})
 
+find_library(LIBSENSORS_LIBRARY NAMES libsensors.so)
+if (LIBSENSORS_LIBRARY)
+	set(HAS_LIBSENSORS 1)
+	target_link_libraries(devices ${LIBSENSORS_LIBRARY})
+endif ()
+
 add_library(sysobj_early STATIC
 	deps/sysobj_early/src/gg_slist.c
 	deps/sysobj_early/src/strstr_word.c
@@ -390,6 +396,6 @@ install(FILES ${HARDINFO_MANPAGES}
 	PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 install(FILES pixmaps/hardinfo.png
-	DESTINATION share/icons/hicolor/48x48/apps
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/48x48/apps
 	PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
